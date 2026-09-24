@@ -38,6 +38,14 @@ Each video's YouTube **title** is its filename (without the extension).
 On success the file is moved to the Finished folder, so re-running never
 double-uploads the same file. Your settings are saved automatically.
 
+**Duplicate filenames are never overwritten.** If a file with the same name
+already exists in the Finished folder, the moved file gets a date + time stamp
+appended (down to the second), e.g. `clip_2026-09-23_14-05-31.mp4`.
+
+**Auto-update.** On startup the app quietly checks GitHub for a newer release.
+If one exists it offers to download and install it, then restarts itself. You
+can also trigger this any time with the **Check for updates** button.
+
 ---
 
 ## One-time setup: getting your `client_secret.json`

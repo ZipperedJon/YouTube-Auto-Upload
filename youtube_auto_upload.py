@@ -15,8 +15,11 @@ import sys
 import json
 import queue
 import shutil
+import subprocess
 import threading
 import traceback
+import urllib.request
+from datetime import datetime
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -33,6 +36,14 @@ from googleapiclient.errors import HttpError
 # ---------------------------------------------------------------------------
 
 APP_NAME = "YouTube Auto Upload"
+APP_VERSION = "1.1.0"
+
+# Where to look for updates (your public GitHub repo).
+GITHUB_OWNER = "ZipperedJon"
+GITHUB_REPO = "YouTube-Auto-Upload"
+RELEASES_API = (
+    f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+)
 
 # Everything persistent lives in %APPDATA%\YouTubeAutoUpload so it survives the
 # .exe being moved around.
@@ -175,13 +186,120 @@ def upload_video(service, file_path, privacy, log):
 
 
 # ---------------------------------------------------------------------------
+# Auto-update (pulls the latest release from GitHub)
+# ---------------------------------------------------------------------------
+
+def _parse_version(v):
+    """Turn '1.2.3' (or 'v1.2.3') into a comparable tuple (1, 2, 3)."""
+    parts = []
+    for chunk in str(v).strip().lstrip("vV").split("."):
+        digits = "".join(ch for ch in chunk if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts) or (0,)
+
+
+def check_for_update():
+    """Ask GitHub for the latest release.
+
+    Returns (latest_version, download_url) if a newer .exe is available,
+    otherwise None.
+    """
+    req = urllib.request.Request(
+        RELEASES_API,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": APP_NAME,
+        },
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+
+    tag = data.get("tag_name", "")
+    if not tag:
+        return None
+    if _parse_version(tag) <= _parse_version(APP_VERSION):
+        return None  # already current (or newer)
+
+    download_url = None
+    for asset in data.get("assets", []):
+        if asset.get("name", "").lower().endswith(".exe"):
+            download_url = asset.get("browser_download_url")
+            break
+    if not download_url:
+        return None
+    return (tag.lstrip("vV"), download_url)
+
+
+def download_and_apply_update(download_url, progress_cb=None):
+    """Download the new .exe next to the current one and launch a helper
+    script that swaps it in once this program exits, then relaunches it.
+
+    Only works from the built .exe (not when running from source).
+    """
+    if not getattr(sys, "frozen", False):
+        raise RuntimeError(
+            "Auto-update only works on the built .exe. Running from source? "
+            "Use 'git pull' instead."
+        )
+
+    current_exe = sys.executable
+    exe_dir = os.path.dirname(current_exe)
+    new_exe = os.path.join(exe_dir, "_update_new.exe")
+
+    req = urllib.request.Request(download_url, headers={"User-Agent": APP_NAME})
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        total = int(resp.headers.get("Content-Length", 0) or 0)
+        downloaded = 0
+        last_pct = -1
+        with open(new_exe, "wb") as f:
+            while True:
+                chunk = resp.read(256 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+                downloaded += len(chunk)
+                if progress_cb and total:
+                    pct = int(downloaded * 100 / total)
+                    if pct != last_pct and pct % 10 == 0:
+                        progress_cb(pct)
+                        last_pct = pct
+
+    # A tiny batch script that waits for this .exe to close (so the file
+    # unlocks), replaces it, relaunches, and deletes itself.
+    bat_path = os.path.join(exe_dir, "_update.bat")
+    bat = (
+        "@echo off\r\n"
+        "setlocal\r\n"
+        f'set "OLD={current_exe}"\r\n'
+        f'set "NEW={new_exe}"\r\n'
+        ":retry\r\n"
+        "timeout /t 1 /nobreak >nul\r\n"
+        'move /y "%NEW%" "%OLD%" >nul 2>&1\r\n'
+        "if errorlevel 1 goto retry\r\n"
+        'start "" "%OLD%"\r\n'
+        'del "%~f0"\r\n'
+    )
+    with open(bat_path, "w", encoding="utf-8") as f:
+        f.write(bat)
+
+    # Launch the updater detached and with no console window.
+    DETACHED_PROCESS = 0x00000008
+    CREATE_NO_WINDOW = 0x08000000
+    subprocess.Popen(
+        ["cmd", "/c", bat_path],
+        creationflags=DETACHED_PROCESS | CREATE_NO_WINDOW,
+        close_fds=True,
+    )
+
+
+# ---------------------------------------------------------------------------
 # GUI
 # ---------------------------------------------------------------------------
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title(APP_NAME)
+        self.title(f"{APP_NAME} v{APP_VERSION}")
         self.geometry("720x620")
         self.minsize(640, 560)
 
@@ -198,6 +316,9 @@ class App(tk.Tk):
 
         self.after(100, self._drain_log_queue)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Quietly check GitHub for a newer release shortly after startup.
+        self.after(1500, lambda: self._check_updates_async(silent=True))
 
     # -- UI construction ----------------------------------------------------
 
@@ -254,6 +375,10 @@ class App(tk.Tk):
         self.run_btn.pack(side="left", padx=10)
         self.cancel_btn = ttk.Button(act_frame, text="Cancel", command=self._on_cancel, state="disabled")
         self.cancel_btn.pack(side="left")
+        ttk.Button(
+            act_frame, text="Check for updates",
+            command=lambda: self._check_updates_async(silent=False),
+        ).pack(side="right", padx=10)
 
         # Log
         log_frame = ttk.LabelFrame(self, text="Log")
@@ -464,14 +589,79 @@ class App(tk.Tk):
     def _move_to_output(self, path, out_folder):
         base = os.path.basename(path)
         dest = os.path.join(out_folder, base)
-        # Avoid clobbering an existing file of the same name.
+        # If a file of the same name already exists, append a date+time stamp
+        # (down to the second) so nothing is ever overwritten or deleted.
         if os.path.exists(dest):
             stem, ext = os.path.splitext(base)
+            stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            dest = os.path.join(out_folder, f"{stem}_{stamp}{ext}")
+            # Extremely unlikely, but guard against a same-second collision.
             i = 1
             while os.path.exists(dest):
-                dest = os.path.join(out_folder, f"{stem} ({i}){ext}")
+                dest = os.path.join(out_folder, f"{stem}_{stamp}_{i}{ext}")
                 i += 1
+            self.log(f"  (name existed; saved as '{os.path.basename(dest)}')")
         shutil.move(path, dest)
+        return dest
+
+    # -- Auto-update --------------------------------------------------------
+
+    def _check_updates_async(self, silent=True):
+        threading.Thread(
+            target=self._check_updates_thread, args=(silent,), daemon=True
+        ).start()
+
+    def _check_updates_thread(self, silent):
+        try:
+            result = check_for_update()
+        except Exception as e:
+            if not silent:
+                self.after(0, lambda: messagebox.showinfo(
+                    APP_NAME, f"Could not check for updates:\n{e}"))
+            return
+        if result is None:
+            if not silent:
+                self.after(0, lambda: messagebox.showinfo(
+                    APP_NAME, f"You're up to date (v{APP_VERSION})."))
+            return
+        latest, url = result
+        self.after(0, lambda: self._prompt_update(latest, url))
+
+    def _prompt_update(self, latest, url):
+        if not getattr(sys, "frozen", False):
+            messagebox.showinfo(
+                APP_NAME,
+                f"A newer version (v{latest}) is on GitHub, but you're running "
+                f"from source. Use 'git pull' to update.",
+            )
+            return
+        if messagebox.askyesno(
+            APP_NAME,
+            f"A new version (v{latest}) is available.\n"
+            f"You have v{APP_VERSION}.\n\n"
+            f"Download and install it now? The app will restart.",
+        ):
+            self.log(f"Downloading update v{latest}...")
+            threading.Thread(
+                target=self._update_thread, args=(url,), daemon=True
+            ).start()
+
+    def _update_thread(self, url):
+        try:
+            download_and_apply_update(url, progress_cb=lambda p: self.log(f"    ...{p}%"))
+            self.after(0, self._finish_update)
+        except Exception as e:
+            self.log(f"Update failed: {e}")
+
+    def _finish_update(self):
+        messagebox.showinfo(
+            APP_NAME,
+            "Update downloaded. The app will now close and reopen with the "
+            "new version.",
+        )
+        self._persist()
+        # Hard-exit so the .exe file unlocks and the updater can replace it.
+        os._exit(0)
 
     # -- Close --------------------------------------------------------------
 
