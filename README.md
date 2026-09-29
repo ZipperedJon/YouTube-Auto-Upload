@@ -35,6 +35,8 @@ browser-scripting tools do).
 5. Click **Run**
 
 Each video's YouTube **title** is its filename (without the extension).
+You can also type a **Description** that gets applied to every uploaded video;
+it's saved automatically (when you run or close the app) and reloaded next time.
 On success the file is moved to the Finished folder, so re-running never
 double-uploads the same file. Your settings are saved automatically.
 

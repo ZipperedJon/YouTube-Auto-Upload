@@ -36,7 +36,7 @@ from googleapiclient.errors import HttpError
 # ---------------------------------------------------------------------------
 
 APP_NAME = "YouTube Auto Upload"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
 # Where to look for updates (your public GitHub repo).
 GITHUB_OWNER = "ZipperedJon"
@@ -78,6 +78,7 @@ def load_config():
         "input_folders": [],
         "output_folder": "",
         "privacy": "private",
+        "description": "",
     }
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -153,13 +154,13 @@ def build_service(creds):
     return build("youtube", "v3", credentials=creds)
 
 
-def upload_video(service, file_path, privacy, log):
+def upload_video(service, file_path, privacy, log, description=""):
     """Upload one video. Returns the new video id on success."""
     title = os.path.splitext(os.path.basename(file_path))[0]
     body = {
         "snippet": {
             "title": title[:100],  # YouTube title limit
-            "description": "",
+            "description": description[:5000],  # YouTube description limit
             "categoryId": "22",  # People & Blogs (a safe default)
         },
         "status": {
@@ -312,6 +313,7 @@ class App(tk.Tk):
         self._refresh_input_list()
         self.output_var.set(self.cfg.get("output_folder", ""))
         self.privacy_var.set(self.cfg.get("privacy", "private"))
+        self.desc_text.insert("1.0", self.cfg.get("description", ""))
         self._update_auth_status()
 
         self.after(100, self._drain_log_queue)
@@ -347,6 +349,15 @@ class App(tk.Tk):
         ttk.Button(out_frame, text="Browse", command=self._pick_output).pack(
             side="right", padx=(0, 10), pady=10
         )
+
+        # Description (applied to every uploaded video)
+        desc_frame = ttk.LabelFrame(self, text="Description (used for all uploaded videos)")
+        desc_frame.pack(fill="both", expand=False, **pad)
+        self.desc_text = tk.Text(desc_frame, height=4, wrap="word")
+        self.desc_text.pack(side="left", fill="both", expand=True, padx=10, pady=10)
+        desc_scroll = ttk.Scrollbar(desc_frame, command=self.desc_text.yview)
+        desc_scroll.pack(side="right", fill="y", pady=10, padx=(0, 10))
+        self.desc_text.configure(yscrollcommand=desc_scroll.set)
 
         # Options row
         opt_frame = ttk.Frame(self)
@@ -470,6 +481,8 @@ class App(tk.Tk):
     def _persist(self):
         self.cfg["output_folder"] = self.output_var.get().strip()
         self.cfg["privacy"] = self.privacy_var.get() or "private"
+        # "end-1c" trims the trailing newline Tk always keeps on a Text widget.
+        self.cfg["description"] = self.desc_text.get("1.0", "end-1c")
         save_config(self.cfg)
 
     # -- Logging ------------------------------------------------------------
@@ -532,6 +545,7 @@ class App(tk.Tk):
             out_folder = self.cfg["output_folder"]
             os.makedirs(out_folder, exist_ok=True)
             privacy = self.cfg["privacy"]
+            description = self.cfg.get("description", "")
 
             files = self._collect_videos()
             if not files:
@@ -547,7 +561,7 @@ class App(tk.Tk):
                 name = os.path.basename(path)
                 self.log(f"Uploading: {name}")
                 try:
-                    vid = upload_video(service, path, privacy, self.log)
+                    vid = upload_video(service, path, privacy, self.log, description)
                     self.log(f"  Uploaded (id={vid}). Moving to Finished folder.")
                     self._move_to_output(path, out_folder)
                     ok += 1
