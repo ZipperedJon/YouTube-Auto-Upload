@@ -22,7 +22,7 @@ import urllib.request
 from datetime import datetime
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 
 import google.oauth2.credentials
 import google_auth_oauthlib.flow
@@ -36,7 +36,7 @@ from googleapiclient.errors import HttpError
 # ---------------------------------------------------------------------------
 
 APP_NAME = "YouTube Auto Upload"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 
 # Where to look for updates (your public GitHub repo).
 GITHUB_OWNER = "ZipperedJon"
@@ -353,10 +353,31 @@ class App(tk.Tk):
         # Description (applied to every uploaded video)
         desc_frame = ttk.LabelFrame(self, text="Description (used for all uploaded videos)")
         desc_frame.pack(fill="both", expand=False, **pad)
-        self.desc_text = tk.Text(desc_frame, height=4, wrap="word")
-        self.desc_text.pack(side="left", fill="both", expand=True, padx=10, pady=10)
-        desc_scroll = ttk.Scrollbar(desc_frame, command=self.desc_text.yview)
-        desc_scroll.pack(side="right", fill="y", pady=10, padx=(0, 10))
+
+        # Formatting toolbar. YouTube descriptions are plain text but honor
+        # *bold*, _italic_, -strike-, and auto-link full URLs.
+        desc_tools = ttk.Frame(desc_frame)
+        desc_tools.pack(fill="x", padx=10, pady=(8, 0))
+        ttk.Button(desc_tools, text="Bold", width=6,
+                   command=lambda: self._wrap_selection("*")).pack(side="left")
+        ttk.Button(desc_tools, text="Italic", width=6,
+                   command=lambda: self._wrap_selection("_")).pack(side="left", padx=4)
+        ttk.Button(desc_tools, text="Strike", width=7,
+                   command=lambda: self._wrap_selection("-")).pack(side="left")
+        ttk.Button(desc_tools, text="Insert link",
+                   command=self._insert_link).pack(side="left", padx=4)
+        ttk.Label(
+            desc_tools,
+            text="YouTube honors *bold*, _italic_, -strike-; full URLs become clickable.",
+            foreground="#777",
+        ).pack(side="left", padx=8)
+
+        desc_body = ttk.Frame(desc_frame)
+        desc_body.pack(fill="both", expand=True, padx=10, pady=(4, 10))
+        self.desc_text = tk.Text(desc_body, height=5, wrap="word", undo=True)
+        self.desc_text.pack(side="left", fill="both", expand=True)
+        desc_scroll = ttk.Scrollbar(desc_body, command=self.desc_text.yview)
+        desc_scroll.pack(side="right", fill="y")
         self.desc_text.configure(yscrollcommand=desc_scroll.set)
 
         # Options row
@@ -399,6 +420,38 @@ class App(tk.Tk):
         scroll = ttk.Scrollbar(log_frame, command=self.log_text.yview)
         scroll.pack(side="right", fill="y", pady=10, padx=(0, 10))
         self.log_text.configure(yscrollcommand=scroll.set)
+
+    # -- Description formatting ---------------------------------------------
+
+    def _wrap_selection(self, marker):
+        """Wrap the selected text with a marker (e.g. '*' for bold). With no
+        selection, insert the pair and drop the cursor between them."""
+        try:
+            start = self.desc_text.index("sel.first")
+            end = self.desc_text.index("sel.last")
+            selected = self.desc_text.get(start, end)
+            self.desc_text.delete(start, end)
+            self.desc_text.insert(start, f"{marker}{selected}{marker}")
+        except tk.TclError:
+            idx = self.desc_text.index("insert")
+            self.desc_text.insert(idx, marker + marker)
+            self.desc_text.mark_set("insert", f"{idx}+{len(marker)}c")
+        self.desc_text.focus_set()
+
+    def _insert_link(self):
+        url = simpledialog.askstring(
+            APP_NAME,
+            "Enter the URL to insert.\n"
+            "(YouTube makes full URLs clickable in the description.)",
+            parent=self,
+        )
+        if not url:
+            return
+        url = url.strip()
+        if not (url.startswith("http://") or url.startswith("https://")):
+            url = "https://" + url
+        self.desc_text.insert("insert", url)
+        self.desc_text.focus_set()
 
     # -- Small UI helpers ---------------------------------------------------
 
