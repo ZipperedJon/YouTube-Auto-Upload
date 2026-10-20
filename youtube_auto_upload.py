@@ -22,7 +22,7 @@ import urllib.request
 from datetime import datetime
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, simpledialog
+from tkinter import ttk, filedialog, messagebox
 
 import google.oauth2.credentials
 import google_auth_oauthlib.flow
@@ -36,7 +36,7 @@ from googleapiclient.errors import HttpError
 # ---------------------------------------------------------------------------
 
 APP_NAME = "YouTube Auto Upload"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 
 # Where to look for updates (your public GitHub repo).
 GITHUB_OWNER = "ZipperedJon"
@@ -78,7 +78,6 @@ def load_config():
         "input_folders": [],
         "output_folder": "",
         "privacy": "private",
-        "description": "",
     }
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -154,13 +153,17 @@ def build_service(creds):
     return build("youtube", "v3", credentials=creds)
 
 
-def upload_video(service, file_path, privacy, log, description=""):
-    """Upload one video. Returns the new video id on success."""
+def upload_video(service, file_path, privacy, log):
+    """Upload one video. Returns the new video id on success.
+
+    Note: the description is left blank on purpose — set a channel default
+    description in YouTube Studio (Settings -> Upload defaults) instead.
+    """
     title = os.path.splitext(os.path.basename(file_path))[0]
     body = {
         "snippet": {
             "title": title[:100],  # YouTube title limit
-            "description": description[:5000],  # YouTube description limit
+            "description": "",
             "categoryId": "22",  # People & Blogs (a safe default)
         },
         "status": {
@@ -313,7 +316,6 @@ class App(tk.Tk):
         self._refresh_input_list()
         self.output_var.set(self.cfg.get("output_folder", ""))
         self.privacy_var.set(self.cfg.get("privacy", "private"))
-        self.desc_text.insert("1.0", self.cfg.get("description", ""))
         self._update_auth_status()
 
         self.after(100, self._drain_log_queue)
@@ -349,36 +351,6 @@ class App(tk.Tk):
         ttk.Button(out_frame, text="Browse", command=self._pick_output).pack(
             side="right", padx=(0, 10), pady=10
         )
-
-        # Description (applied to every uploaded video)
-        desc_frame = ttk.LabelFrame(self, text="Description (used for all uploaded videos)")
-        desc_frame.pack(fill="both", expand=False, **pad)
-
-        # Formatting toolbar. YouTube descriptions are plain text but honor
-        # *bold*, _italic_, -strike-, and auto-link full URLs.
-        desc_tools = ttk.Frame(desc_frame)
-        desc_tools.pack(fill="x", padx=10, pady=(8, 0))
-        ttk.Button(desc_tools, text="Bold", width=6,
-                   command=lambda: self._wrap_selection("*")).pack(side="left")
-        ttk.Button(desc_tools, text="Italic", width=6,
-                   command=lambda: self._wrap_selection("_")).pack(side="left", padx=4)
-        ttk.Button(desc_tools, text="Strike", width=7,
-                   command=lambda: self._wrap_selection("-")).pack(side="left")
-        ttk.Button(desc_tools, text="Insert link",
-                   command=self._insert_link).pack(side="left", padx=4)
-        ttk.Label(
-            desc_tools,
-            text="YouTube honors *bold*, _italic_, -strike-; full URLs become clickable.",
-            foreground="#777",
-        ).pack(side="left", padx=8)
-
-        desc_body = ttk.Frame(desc_frame)
-        desc_body.pack(fill="both", expand=True, padx=10, pady=(4, 10))
-        self.desc_text = tk.Text(desc_body, height=5, wrap="word", undo=True)
-        self.desc_text.pack(side="left", fill="both", expand=True)
-        desc_scroll = ttk.Scrollbar(desc_body, command=self.desc_text.yview)
-        desc_scroll.pack(side="right", fill="y")
-        self.desc_text.configure(yscrollcommand=desc_scroll.set)
 
         # Options row
         opt_frame = ttk.Frame(self)
@@ -420,38 +392,6 @@ class App(tk.Tk):
         scroll = ttk.Scrollbar(log_frame, command=self.log_text.yview)
         scroll.pack(side="right", fill="y", pady=10, padx=(0, 10))
         self.log_text.configure(yscrollcommand=scroll.set)
-
-    # -- Description formatting ---------------------------------------------
-
-    def _wrap_selection(self, marker):
-        """Wrap the selected text with a marker (e.g. '*' for bold). With no
-        selection, insert the pair and drop the cursor between them."""
-        try:
-            start = self.desc_text.index("sel.first")
-            end = self.desc_text.index("sel.last")
-            selected = self.desc_text.get(start, end)
-            self.desc_text.delete(start, end)
-            self.desc_text.insert(start, f"{marker}{selected}{marker}")
-        except tk.TclError:
-            idx = self.desc_text.index("insert")
-            self.desc_text.insert(idx, marker + marker)
-            self.desc_text.mark_set("insert", f"{idx}+{len(marker)}c")
-        self.desc_text.focus_set()
-
-    def _insert_link(self):
-        url = simpledialog.askstring(
-            APP_NAME,
-            "Enter the URL to insert.\n"
-            "(YouTube makes full URLs clickable in the description.)",
-            parent=self,
-        )
-        if not url:
-            return
-        url = url.strip()
-        if not (url.startswith("http://") or url.startswith("https://")):
-            url = "https://" + url
-        self.desc_text.insert("insert", url)
-        self.desc_text.focus_set()
 
     # -- Small UI helpers ---------------------------------------------------
 
@@ -534,8 +474,6 @@ class App(tk.Tk):
     def _persist(self):
         self.cfg["output_folder"] = self.output_var.get().strip()
         self.cfg["privacy"] = self.privacy_var.get() or "private"
-        # "end-1c" trims the trailing newline Tk always keeps on a Text widget.
-        self.cfg["description"] = self.desc_text.get("1.0", "end-1c")
         save_config(self.cfg)
 
     # -- Logging ------------------------------------------------------------
@@ -598,7 +536,6 @@ class App(tk.Tk):
             out_folder = self.cfg["output_folder"]
             os.makedirs(out_folder, exist_ok=True)
             privacy = self.cfg["privacy"]
-            description = self.cfg.get("description", "")
 
             files = self._collect_videos()
             if not files:
@@ -614,7 +551,7 @@ class App(tk.Tk):
                 name = os.path.basename(path)
                 self.log(f"Uploading: {name}")
                 try:
-                    vid = upload_video(service, path, privacy, self.log, description)
+                    vid = upload_video(service, path, privacy, self.log)
                     self.log(f"  Uploaded (id={vid}). Moving to Finished folder.")
                     self._move_to_output(path, out_folder)
                     ok += 1

@@ -35,15 +35,13 @@ browser-scripting tools do).
 5. Click **Run**
 
 Each video's YouTube **title** is its filename (without the extension).
-You can also type a **Description** that gets applied to every uploaded video;
-it's saved automatically (when you run or close the app) and reloaded next time.
-The description has a small formatting toolbar — **Bold**, **Italic**,
-**Strike**, and **Insert link**. YouTube descriptions are plain text, so these
-use YouTube's own supported markers (`*bold*`, `_italic_`, `-strike-`) and full
-URLs (`https://…`) are auto-linked by YouTube. There are no custom-text
-hyperlinks or colors — YouTube doesn't support those in descriptions.
 On success the file is moved to the Finished folder, so re-running never
 double-uploads the same file. Your settings are saved automatically.
+
+> **Descriptions:** the app uploads videos with a blank description on purpose.
+> Set a **channel default description** in **YouTube Studio → Settings →
+> Upload defaults** — YouTube then applies it to every upload automatically,
+> with proper clickable links.
 
 **Duplicate filenames are never overwritten.** If a file with the same name
 already exists in the Finished folder, the moved file gets a date + time stamp
